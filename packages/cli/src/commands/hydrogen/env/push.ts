@@ -10,6 +10,7 @@ import {
   renderInfo,
   renderWarning,
   renderSuccess,
+  renderError,
 } from '@shopify/cli-kit/node/ui';
 import {fileExists, readFile, writeFile} from '@shopify/cli-kit/node/fs';
 import {
@@ -25,6 +26,11 @@ import {getStorefrontEnvironments} from '../../../lib/graphql/admin/list-environ
 import {linkStorefront} from '../link.js';
 import {getStorefrontEnvVariables} from '../../../lib/graphql/admin/pull-variables.js';
 import {pluralize} from '@shopify/cli-kit/common/string';
+
+const CANCEL_CHOICE = {
+  label: 'Cancel without overwriting any environment variables',
+  value: null,
+};
 
 export default class EnvPush extends Command {
   static description =
@@ -53,6 +59,16 @@ export async function runEnvPush({
   path: root = process.cwd(),
   force,
 }: Flags) {
+  const dotEnvPath = resolvePath(root, '.env');
+  if (!fileExists(dotEnvPath)) {
+    renderWarning({
+      headline: 'Local .env file not found',
+      body: '.env could not be located in the root directory, or at the specified path.'
+    });
+    process.exit(1);
+  }
+
+  // Authenticate
   const [{session, config}, cliCommand] = await Promise.all([
     login(root),
     getCliCommand(),
@@ -77,16 +93,16 @@ export async function runEnvPush({
   if (!config.storefront?.id) return;
 
   // Fetch environments
-  const storefront = await getStorefrontEnvironments(
+  const environmentsData = await getStorefrontEnvironments(
     session,
     config.storefront.id,
   );
 
-  if (!storefront) return;
+  if (!environmentsData) return;
 
-  const preview = storefront.environments.filter((environment) => environment.type === 'PREVIEW')
-  const production = storefront.environments.filter((environment) => environment.type === 'PRODUCTION')
-  const custom = storefront.environments.filter((environment) => environment.type === 'CUSTOM')
+  const preview = environmentsData.environments.filter((environment) => environment.type === 'PREVIEW')
+  const production = environmentsData.environments.filter((environment) => environment.type === 'PRODUCTION')
+  const custom = environmentsData.environments.filter((environment) => environment.type === 'CUSTOM')
 
   const environments = [
     ...preview,
@@ -94,43 +110,46 @@ export async function runEnvPush({
     ...production,
   ];
 
+  if (environments.length === 0) process.exit(1);
+
   let validatedEnvironment = null;
 
   // Select an environment, if not passed via the flag
   if (!environment) {
     const choices = [
-      {
-        label: 'Cancel without overwriting any environment variables',
-        value: null,
-      },
-      ...environments.map(({name, branch}) => ({
+      CANCEL_CHOICE,
+      ...environments.map(({id, name, branch}) => ({
         label: branch ? `${name} (${branch})` : name,
-        value: `${name}-${branch}`,
+        value: `${id}-${name}-${branch}`,
       })),
     ];
 
-    const selection = await renderSelectPrompt({
+    const pushToBranchSelection = await renderSelectPrompt({
       message: 'Select a set of environment variables to overwrite:',
       choices,
     });
 
-    if (!selection) process.exit(1);
+    // Selected cancel
+    if (!pushToBranchSelection) process.exit(0);
 
-    validatedEnvironment = selection;
+    validatedEnvironment = pushToBranchSelection;
   } else {
     // Ensure the parameter is a valid environment, and unique
     const matchedEnvironments = environments.filter(({name}) => name === environment);
-    if (!matchedEnvironments.length) process.exit(1);
+    if (!matchedEnvironments.length) {
+      renderWarning({
+        headline: 'Environment not found',
+        body: `We could not find an environment matching the name '${environment}'.`
+      });
+      process.exit(1);
+    };
 
     if (matchedEnvironments.length >= 2) {
       const selection = await renderSelectPrompt({
         message: `There were multiple environments found with the name ${environment}:`,
         choices:
         [
-          {
-            label: 'Cancel without overwriting any environment variables',
-            value: null,
-          },
+          CANCEL_CHOICE,
           ...matchedEnvironments.map(({name, branch, type, url}) => ({
             label: `${name} (${branch}) ${type} ${url}`,
             value: `${name}-${branch}`,
@@ -143,47 +162,42 @@ export async function runEnvPush({
     }
   }
 
-  const [env, branch] = validatedEnvironment?.split('-') ?? [];
+  const [_id, env, branch] = validatedEnvironment?.split('-') ?? [];
   if (!env) process.exit(1);
 
   // Generate a diff of the changes, and confirm changes
-  const dotEnvPath = resolvePath(root, '.env');
-  const data = await getStorefrontEnvVariables(
-    session,
-    config.storefront.id,
-    branch,
-  );
+  if (!force) {
+    const environmentVariablesData = await getStorefrontEnvVariables(
+      session,
+      config.storefront.id,
+      branch,
+    );
 
-  const variables = data?.environmentVariables;
-  if (!variables?.length) return;
+    const variables = environmentVariablesData?.environmentVariables ?? [];
+    const fetchedEnv = variables.reduce((acc, {isSecret, key, value}) => {
+      return `${acc}${key}=${isSecret ? `""` : value}\n`;
+    }, '');
 
-  const fetchedEnv = variables.reduce((acc, {isSecret, key, value}) => {
-    return `${acc}${key}=${isSecret ? `""` : value}\n`;
-  }, '');
-
-  if ((await fileExists(dotEnvPath)) && !force) {
     const existingEnv = await readFile(dotEnvPath);
 
     if (existingEnv === fetchedEnv) {
       renderInfo({
         body: `No changes to your environment variables`,
       });
-      return;
-    }
+    } else {
+      const diff = diffLines(fetchedEnv, existingEnv);
 
-    const diff = diffLines(fetchedEnv, existingEnv);
+      const overwrite = await renderConfirmationPrompt({
+        confirmationMessage: `Yes, confirm changes`,
+        cancellationMessage: `No, make changes later`,
+        message: outputContent`We'll make the following changes to your environment variables for ${env}:
 
-    const overwrite = await renderConfirmationPrompt({
-      confirmationMessage: `Yes, confirm changes`,
-      cancellationMessage: `No, make changes later`,
-      message: outputContent`We'll make the following changes to your environment variables for ${env}:
+  ${outputToken.linesDiff(diff)}
+  Continue?`.value,
+      });
 
-${outputToken.linesDiff(diff)}
-Continue?`.value,
-    });
-
-    if (!overwrite) {
-      return;
+      // Cancelled making changes
+      if (!overwrite) process.exit(0);
     }
   }
 
@@ -191,3 +205,5 @@ Continue?`.value,
 
   process.exit(0);
 }
+
+// Todo: TEST SECRETS
