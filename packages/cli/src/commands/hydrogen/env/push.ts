@@ -164,8 +164,6 @@ export async function runEnvPush({
     }
   }
 
-  outputInfo(outputContent`validatedEnvironment ${validatedEnvironment || ''}`)
-
   const [_id, env, branch] = validatedEnvironment?.split('-') ?? [];
   if (!env) process.exit(1);
 
@@ -174,7 +172,7 @@ export async function runEnvPush({
     const environmentVariablesData = await getStorefrontEnvVariables(
       session,
       config.storefront.id,
-      branch,
+      branch === 'null' ? undefined : branch,
     );
 
     const variables = environmentVariablesData?.environmentVariables ?? [];
