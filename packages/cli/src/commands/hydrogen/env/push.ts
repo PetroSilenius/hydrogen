@@ -150,20 +150,25 @@ export async function runEnvPush({
         choices:
         [
           CANCEL_CHOICE,
-          ...matchedEnvironments.map(({name, branch, type, url}) => ({
+          ...matchedEnvironments.map(({id, name, branch, type, url}) => ({
             label: `${name} (${branch}) ${type} ${url}`,
-            value: `${name}-${branch}`,
+            value: `${id}-${name}-${branch}`,
           })),
         ]
       });
       validatedEnvironment = selection;
     } else {
-      validatedEnvironment = environment;
+      const {id, name, branch} = matchedEnvironments[0] ?? {};
+      validatedEnvironment = `${id}-${name}-${branch}`;
     }
   }
 
+  outputInfo(outputContent`validatedEnvironment ${validatedEnvironment || ''}`)
+
   const [_id, env, branch] = validatedEnvironment?.split('-') ?? [];
   if (!env) process.exit(1);
+
+  outputInfo(outputContent`Force ${(force ?? false).toString()}`)
 
   // Generate a diff of the changes, and confirm changes
   if (!force) {
