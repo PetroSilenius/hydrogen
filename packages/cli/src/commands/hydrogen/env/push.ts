@@ -26,6 +26,7 @@ import {getStorefrontEnvironments} from '../../../lib/graphql/admin/list-environ
 import {linkStorefront} from '../link.js';
 import {getStorefrontEnvVariables} from '../../../lib/graphql/admin/pull-variables.js';
 import {pluralize} from '@shopify/cli-kit/common/string';
+import {ciPlatform} from '@shopify/cli-kit/node/context/local';
 
 const CANCEL_CHOICE = {
   label: 'Cancel without overwriting any environment variables',
@@ -50,15 +51,15 @@ export default class EnvPush extends Command {
 
 interface Flags {
   environment?: string;
-  force?: boolean;
   path?: string;
 }
 
 export async function runEnvPush({
   environment,
   path: root = process.cwd(),
-  force,
 }: Flags) {
+  const isCI = ciPlatform().isCI;
+
   const dotEnvPath = resolvePath(root, '.env');
   if (!fileExists(dotEnvPath)) {
     renderWarning({
@@ -168,10 +169,8 @@ export async function runEnvPush({
   const [_id, env, branch] = validatedEnvironment?.split('-') ?? [];
   if (!env) process.exit(1);
 
-  outputInfo(outputContent`Force ${(force ?? false).toString()}`)
-
   // Generate a diff of the changes, and confirm changes
-  if (!force) {
+  if (!isCI) {
     const environmentVariablesData = await getStorefrontEnvVariables(
       session,
       config.storefront.id,
