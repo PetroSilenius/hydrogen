@@ -5,6 +5,11 @@ import {login} from '../../../lib/auth.js';
 import {getCliCommand} from '../../../lib/shell.js';
 import {resolvePath} from '@shopify/cli-kit/node/path';
 import {
+  ensureIsClean,
+  getLatestGitCommit,
+  GitDirectoryNotCleanError,
+} from '@shopify/cli-kit/node/git';
+import {
   renderConfirmationPrompt,
   renderSelectPrompt,
   renderInfo,
@@ -17,21 +22,22 @@ import {
   outputContent,
   outputInfo,
   outputToken,
+  outputWarn,
 } from '@shopify/cli-kit/node/output';
 import {
   renderMissingLink,
   renderMissingStorefront,
 } from '../../../lib/render-errors.js';
-import {getStorefrontEnvironments} from '../../../lib/graphql/admin/list-environments.js';
+import {Environment, getStorefrontEnvironments} from '../../../lib/graphql/admin/list-environments.js';
 import {linkStorefront} from '../link.js';
 import {getStorefrontEnvVariables} from '../../../lib/graphql/admin/pull-variables.js';
 import {pluralize} from '@shopify/cli-kit/common/string';
 import {ciPlatform} from '@shopify/cli-kit/node/context/local';
 
-const CANCEL_CHOICE = {
-  label: 'Cancel without overwriting any environment variables',
-  value: null,
-};
+interface GitCommit {
+  refs: string;
+  hash: string;
+}
 
 export default class EnvPush extends Command {
   static description =
@@ -56,11 +62,10 @@ interface Flags {
 
 export async function runEnvPush({
   environment,
-  path: root = process.cwd(),
+  path = process.cwd(),
 }: Flags) {
-  const isCI = ciPlatform().isCI;
-
-  const dotEnvPath = resolvePath(root, '.env');
+  // Ensure .env file exists before anything
+  const dotEnvPath = resolvePath(path, '.env');
   if (!fileExists(dotEnvPath)) {
     renderWarning({
       headline: 'Local .env file not found',
@@ -69,9 +74,21 @@ export async function runEnvPush({
     process.exit(1);
   }
 
+  // Read git branch if we're in CI
+  const isCI = ciPlatform().isCI;
+  let validated: Partial<Environment> = {};
+  let gitCommit: GitCommit;
+
+  try {
+    gitCommit = await getLatestGitCommit(path);
+    validated.branch = isCI ? (/HEAD -> ([^,]*)/.exec(gitCommit.refs) || [])[1] : undefined;
+  } catch (error) {
+    outputWarn('Could not retrieve Git history.');
+  }
+
   // Authenticate
   const [{session, config}, cliCommand] = await Promise.all([
-    login(root),
+    login(path),
     getCliCommand(),
   ]);
 
@@ -86,7 +103,7 @@ export async function runEnvPush({
 
     if (!runLink) return;
 
-    config.storefront = await linkStorefront(root, session, config, {
+    config.storefront = await linkStorefront(path, session, config, {
       cliCommand,
     });
   }
@@ -99,7 +116,12 @@ export async function runEnvPush({
     config.storefront.id,
   );
 
-  if (!environmentsData) return;
+  if (!environmentsData) {
+    renderWarning({
+      headline: 'Failed to fetch environments',
+    });
+    process.exit(1);
+  };
 
   const preview = environmentsData.environments.filter((environment) => environment.type === 'PREVIEW')
   const production = environmentsData.environments.filter((environment) => environment.type === 'PRODUCTION')
@@ -111,73 +133,73 @@ export async function runEnvPush({
     ...production,
   ];
 
-  if (environments.length === 0) process.exit(1);
-
-  let validatedEnvironment = null;
-
-  // Select an environment, if not passed via the flag
-  if (!environment) {
-    const choices = [
-      CANCEL_CHOICE,
-      ...environments.map(({id, name, branch}) => ({
-        label: branch ? `${name} (${branch})` : name,
-        value: `${id}-${name}-${branch}`,
-      })),
-    ];
-
-    const pushToBranchSelection = await renderSelectPrompt({
-      message: 'Select a set of environment variables to overwrite:',
-      choices,
+  if (environments.length === 0) {
+    renderWarning({
+      headline: 'No environments found',
     });
+    process.exit(1);
+  }
 
-    // Selected cancel
-    if (!pushToBranchSelection) process.exit(0);
+  // Select and validate an environment, if not passed via the flag
+  if (!isCI) {
+    if (environment) {
+      // If an environment was passed in, ensure the parameter is a valid environment, and unique
+      const matchedEnvironments = environments.filter(({name}) => name === environment);
 
-    validatedEnvironment = pushToBranchSelection;
-  } else {
-    // Ensure the parameter is a valid environment, and unique
-    const matchedEnvironments = environments.filter(({name}) => name === environment);
-    if (!matchedEnvironments.length) {
-      renderWarning({
-        headline: 'Environment not found',
-        body: `We could not find an environment matching the name '${environment}'.`
-      });
-      process.exit(1);
-    };
-
-    if (matchedEnvironments.length >= 2) {
-      const selection = await renderSelectPrompt({
-        message: `There were multiple environments found with the name ${environment}:`,
-        choices:
-        [
-          CANCEL_CHOICE,
-          ...matchedEnvironments.map(({id, name, branch, type, url}) => ({
-            label: `${name} (${branch}) ${type} ${url}`,
-            value: `${id}-${name}-${branch}`,
-          })),
-        ]
-      });
-      validatedEnvironment = selection;
+      if (matchedEnvironments.length === 0) {
+        renderWarning({
+          headline: 'Environment not found',
+          body: `We could not find an environment matching the name '${environment}'.`
+        });
+        process.exit(1);
+      } else if (matchedEnvironments.length === 1) {
+        const {name, branch, type} = matchedEnvironments[0] ?? {};
+        validated = {name, branch, type};
+      } else {
+        // Prompt the user for a selection if there are multiple matches
+        const selection = await renderSelectPrompt({
+          message: `There were multiple environments found with the name ${environment}:`,
+          choices:
+          [
+            ...matchedEnvironments.map(({id, name, branch, type, url}) => ({
+              label: `${name} (${branch}) ${type} ${url}`,
+              value: id,
+            })),
+          ]
+        });
+        const {name, branch, type} = matchedEnvironments.find(({id}) => id === selection) ?? {};
+        validated = {name, branch, type};
+      }
     } else {
-      const {id, name, branch} = matchedEnvironments[0] ?? {};
-      validatedEnvironment = `${id}-${name}-${branch}`;
+      // Environment flag not passed
+      const choices = [
+        ...environments.map(({id, name, branch}) => ({
+          label: branch ? `${name} (${branch})` : name,
+          value: id,
+        })),
+      ];
+
+      const pushToBranchSelection = await renderSelectPrompt({
+        message: 'Select a set of environment variables to overwrite:',
+        choices,
+      });
+
+      const {name, branch, type} = environments.find(({id}) => id === pushToBranchSelection) ?? {};
+      validated = {name, branch, type};
     }
   }
 
-  const [_id, env, branch] = validatedEnvironment?.split('-') ?? [];
-  if (!env) process.exit(1);
-
   // Generate a diff of the changes, and confirm changes
-  if (!isCI) {
-    const environmentVariablesData = await getStorefrontEnvVariables(
+  if (!isCI && validated.type === 'PRODUCTION' && validated.name) {
+    const {environmentVariables = []} = await getStorefrontEnvVariables(
       session,
       config.storefront.id,
-      branch === 'null' ? undefined : branch,
-    );
+      validated.branch ?? undefined,
+    ) ?? {};
 
-    const variables = environmentVariablesData?.environmentVariables ?? [];
-    const fetchedEnv = variables.reduce((acc, {isSecret, key, value}) => {
-      return `${acc}${key}=${isSecret ? `""` : value}\n`;
+    const fetchedEnv = environmentVariables.reduce((acc, {isSecret, key, value}) => {
+      const entry = `${key}=${isSecret ? `""` : value}`;
+      return `${acc}${entry}\n`;
     }, '');
 
     const existingEnv = await readFile(dotEnvPath);
@@ -188,11 +210,10 @@ export async function runEnvPush({
       });
     } else {
       const diff = diffLines(fetchedEnv, existingEnv);
-
       const overwrite = await renderConfirmationPrompt({
         confirmationMessage: `Yes, confirm changes`,
         cancellationMessage: `No, make changes later`,
-        message: outputContent`We'll make the following changes to your environment variables for ${env}:
+        message: outputContent`We'll make the following changes to your environment variables for ${validated.name}:
 
   ${outputToken.linesDiff(diff)}
   Continue?`.value,
@@ -203,7 +224,7 @@ export async function runEnvPush({
     }
   }
 
-  outputInfo(outputContent`Pushed to ${env}`)
+  outputInfo(outputContent`Pushed to ${validated.branch ?? ''} branch`)
 
   process.exit(0);
 }
