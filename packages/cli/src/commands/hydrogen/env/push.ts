@@ -73,6 +73,7 @@ export async function runEnvPush({
     });
     process.exit(1);
   }
+  const existingEnv = await readFile(dotEnvPath);
 
   // Read git branch if we're in CI
   const isCI = ciPlatform().isCI;
@@ -198,11 +199,9 @@ export async function runEnvPush({
     ) ?? {};
 
     const fetchedEnv = environmentVariables.reduce((acc, {isSecret, key, value}) => {
-      const entry = `${key}=${isSecret ? `""` : value}`;
+      const entry = `${key}=${isSecret ? `EXISTING_SECRET_VALUE` : value}`;
       return `${acc}${entry}\n`;
     }, '');
-
-    const existingEnv = await readFile(dotEnvPath);
 
     if (existingEnv === fetchedEnv) {
       renderInfo({
@@ -224,9 +223,60 @@ export async function runEnvPush({
     }
   }
 
+  // Usage example
+  const envVariables = parseEnvFile(existingEnv);
+  console.log(envVariables);
+
   outputInfo(outputContent`Pushed to ${validated.branch ?? ''} branch`)
 
   process.exit(0);
 }
 
-// Todo: TEST SECRETS
+function parseEnvFile(value: string): any {
+  const variables = normalizeEnvFile(value).split('\n');
+
+  const QUOTE_REGEX = new RegExp('"', 'g');
+
+  let keyValues: Record<string, string | undefined> = {};
+  for (let i = 0; i < variables.length; i++) {
+    const cur = variables[i];
+    if (!cur) return;
+
+    const matches = cur.match(QUOTE_REGEX)?.length ?? 0;
+    if (matches % 2 === 0) {
+      const [key, value] = cur.split('=');
+      if (key) {
+        keyValues[key] = value ? removeQuotes(value) : undefined;
+      }
+    } else {
+      let allowedQuotes = 0;
+      let count = 0;
+      let joinedLine = '';
+      while (allowedQuotes < 2 || i >= variables.length) {
+        joinedLine += variables[i+count] + '\n';
+        if (variables[i+count]?.includes('"')) allowedQuotes++;
+        i++;
+      }
+      const [key, value] = joinedLine.split('=');
+      if (key) {
+        keyValues[key] = value ? removeQuotes(value) : undefined;
+      }
+    }
+  }
+
+  return keyValues;
+}
+
+
+// TODO: Consesus on secrets
+// TODO: Handle CLI token or permissions without link? Remove CLI handling?
+
+// Normalize .env file content, specifically comments and quotes
+const removeQuotes = (value: string) => value.replace(/"/g, '');
+
+const COMMENT_REGEX = /#[^\n\r]*/g;
+const NEW_LINE_REGEX = /^\s*[\r\n]/gm;
+const normalizeEnvFile = (value: string) =>
+  value
+    .replace(COMMENT_REGEX, '')
+    .replace(NEW_LINE_REGEX, '');
