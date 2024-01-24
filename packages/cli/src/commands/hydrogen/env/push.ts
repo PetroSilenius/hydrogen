@@ -33,6 +33,7 @@ import {linkStorefront} from '../link.js';
 import {getStorefrontEnvVariables} from '../../../lib/graphql/admin/pull-variables.js';
 import {pluralize} from '@shopify/cli-kit/common/string';
 import {ciPlatform} from '@shopify/cli-kit/node/context/local';
+import {HydrogenStorefrontEnvironmentVariableInput, pushStorefrontEnvVariables} from '../../../lib/graphql/admin/push-variables.js';
 
 interface GitCommit {
   refs: string;
@@ -154,8 +155,8 @@ export async function runEnvPush({
         });
         process.exit(1);
       } else if (matchedEnvironments.length === 1) {
-        const {name, branch, type} = matchedEnvironments[0] ?? {};
-        validated = {name, branch, type};
+        const {id, name, branch, type} = matchedEnvironments[0] ?? {};
+        validated = {id, name, branch, type};
       } else {
         // Prompt the user for a selection if there are multiple matches
         const selection = await renderSelectPrompt({
@@ -168,8 +169,8 @@ export async function runEnvPush({
             })),
           ]
         });
-        const {name, branch, type} = matchedEnvironments.find(({id}) => id === selection) ?? {};
-        validated = {name, branch, type};
+        const {id, name, branch, type} = matchedEnvironments.find(({id}) => id === selection) ?? {};
+        validated = {id, name, branch, type};
       }
     } else {
       // Environment flag not passed
@@ -185,8 +186,8 @@ export async function runEnvPush({
         choices,
       });
 
-      const {name, branch, type} = environments.find(({id}) => id === pushToBranchSelection) ?? {};
-      validated = {name, branch, type};
+      const {id, name, branch, type} = environments.find(({id}) => id === pushToBranchSelection) ?? {};
+      validated = {id, name, branch, type};
     }
   }
 
@@ -223,11 +224,28 @@ export async function runEnvPush({
     }
   }
 
-  // Usage example
-  const envVariables = parseEnvFile(existingEnv);
-  console.log(envVariables);
+  const parsedVars = parseEnvFile(existingEnv)
+  const envVariables: HydrogenStorefrontEnvironmentVariableInput[] = Object.keys(parsedVars)
+    .map((key: string) => ({ key, value: parsedVars[key]}));
 
-  outputInfo(outputContent`Pushed to ${validated.branch ?? ''} branch`)
+  outputInfo(outputContent`Pushing to ${validated.branch ?? ''} branch...`);
+
+  if (!validated.id) process.exit(1);
+  const {userErrors} = await pushStorefrontEnvVariables(
+    session,
+    config.storefront.id,
+    validated.id,
+    envVariables,
+  );
+
+  if (userErrors.length) {
+    renderWarning({
+      headline: 'Failed to upload and save environment variables',
+      body: userErrors[0]?.message,
+    });
+  }
+
+  outputInfo(outputContent`Push to ${validated.branch ?? ''} successful.`);
 
   process.exit(0);
 }
