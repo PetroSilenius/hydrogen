@@ -232,51 +232,41 @@ export async function runEnvPush({
   process.exit(0);
 }
 
-function parseEnvFile(value: string): any {
-  const variables = normalizeEnvFile(value).split('\n');
-
-  const QUOTE_REGEX = new RegExp('"', 'g');
-
-  let keyValues: Record<string, string | undefined> = {};
-  for (let i = 0; i < variables.length; i++) {
-    const cur = variables[i];
-    if (!cur) return;
-
-    const matches = cur.match(QUOTE_REGEX)?.length ?? 0;
-    if (matches % 2 === 0) {
-      const [key, value] = cur.split('=');
-      if (key) {
-        keyValues[key] = value ? removeQuotes(value) : undefined;
-      }
-    } else {
-      let allowedQuotes = 0;
-      let count = 0;
-      let joinedLine = '';
-      while (allowedQuotes < 2 || i >= variables.length) {
-        joinedLine += variables[i+count] + '\n';
-        if (variables[i+count]?.includes('"')) allowedQuotes++;
-        i++;
-      }
-      const [key, value] = joinedLine.split('=');
-      if (key) {
-        keyValues[key] = value ? removeQuotes(value) : undefined;
-      }
-    }
-  }
-
-  return keyValues;
-}
-
-
 // TODO: Consesus on secrets
 // TODO: Handle CLI token or permissions without link? Remove CLI handling?
 
-// Normalize .env file content, specifically comments and quotes
-const removeQuotes = (value: string) => value.replace(/"/g, '');
+// Referenced from dotenv
+// https://github.com/motdotla/dotenv/blob/master/lib/main.js#L12
+const LINE = /(?:^|^)\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)(\s*'(?:\\'|[^'])*'|\s*"(?:\\"|[^"])*"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?\s*(?:#.*)?(?:$|$)/mg
+const parseEnvFile = (src: string) => {
+  const obj: Record<string, string> = {};
 
-const COMMENT_REGEX = /#[^\n\r]*/g;
-const NEW_LINE_REGEX = /^\s*[\r\n]/gm;
-const normalizeEnvFile = (value: string) =>
-  value
-    .replace(COMMENT_REGEX, '')
-    .replace(NEW_LINE_REGEX, '');
+  // Convert buffer to string
+  // Convert line breaks to same format
+  const lines = src.toString().replace(/\r\n?/mg, '\n');
+
+  let match;
+  while ((match = LINE.exec(lines)) != null) {
+    const key = match[1];
+
+    // Default undefined or null to empty string, trim
+    let value = (match[2] ?? '').trim();
+
+    // Check if double quoted
+    const maybeQuote = value[0];
+
+    // Remove surrounding quotes
+    value = value.replace(/^(['"`])([\s\S]*)\1$/mg, '$2');
+
+    // Expand newlines if double quoted
+    if (maybeQuote === '"') {
+      value = value.replace(/\\n/g, '\n');
+      value = value.replace(/\\r/g, '\r');
+    }
+
+    // Add to object
+    if (key) obj[key] = value;
+  }
+
+  return obj
+}
