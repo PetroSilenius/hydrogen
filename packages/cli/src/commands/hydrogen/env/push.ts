@@ -239,7 +239,6 @@ Continue?`.value,
 }
 
 // TODO: Consesus on secrets
-// TODO: Handle CLI token or permissions without link? Remove CLI handling?
 
 // Referenced from dotenv
 // https://github.com/motdotla/dotenv/blob/master/lib/main.js#L12
