@@ -20,8 +20,6 @@ const PushVariablesMutation = `#graphql
 `;
 
 export interface HydrogenStorefrontEnvironmentVariableInput {
-  id?: string;
-  isSecret?: boolean;
   key: string;
   value: string | undefined;
 }

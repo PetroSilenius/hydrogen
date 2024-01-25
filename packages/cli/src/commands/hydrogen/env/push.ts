@@ -182,23 +182,42 @@ export async function runEnvPush({
   // Confirm changes and show a generate diff of changes
   if (!validated.name) process.exit(1);
 
+  // Normalize local variables
+  const parsedVars = parseEnvFile(existingEnv)
+  const envVariables: HydrogenStorefrontEnvironmentVariableInput[] = Object.keys(parsedVars)
+    .map((key: string) => ({ key, value: parsedVars[key]}));
+  const envVariablesString = envVariables
+    .map(({key, value}) => `${key}=${value?.replace(/\n/g, "\\n")}`).join('\n')
+
   const {environmentVariables = []} = await getStorefrontEnvVariables(
     session,
     config.storefront.id,
     validated.branch ?? undefined,
   ) ?? {};
 
-  const fetchedEnv = environmentVariables.reduce((acc, {isSecret, key, value}) => {
-    const entry = `${key}=${isSecret ? `EXISTING_SECRET_VALUE` : value}`;
-    return `${acc}${entry}\n`;
+  // Normalize remote variables
+  const fetchedEnvString = environmentVariables.reduce((acc, {isSecret, key, value}) => {
+    if (isSecret) return acc; // ignore secrets
+    return `${acc}${key}=${value.replace(/\n/g, "\\n")}\n`;
   }, '');
+  const parsedFetchedEnv = parseEnvFile(fetchedEnvString);
+  const fetchedEnvVariables = Object.keys(parsedFetchedEnv)
+    .map((key: string) => ({ key, value: parsedFetchedEnv[key]}))
+  const fetchedEnvVariablesString = fetchedEnvVariables
+    .map(({key, value}) => `${key}=${value?.replace(/\n/g, "\\n")}`).join('\n');
 
-  if (existingEnv === fetchedEnv) {
+  console.log('hit', fetchedEnvVariables, fetchedEnvString);
+
+  if (envVariablesString === fetchedEnvVariablesString) {
     renderInfo({
-      body: `No changes to your environment variables`,
+      body: 'No changes to your environment variables',
     });
+    process.exit(0);
   } else {
-    const diff = diffLines(fetchedEnv, existingEnv);
+    const diff = diffLines(
+      fetchedEnvVariablesString,
+      envVariablesString,
+    );
     const confirmPush = await renderConfirmationPrompt({
       confirmationMessage: `Yes, confirm changes`,
       cancellationMessage: `No, make changes later`,
@@ -211,10 +230,6 @@ Continue?`.value,
     // Cancelled making changes
     if (!confirmPush) process.exit(0);
   }
-
-  const parsedVars = parseEnvFile(existingEnv)
-  const envVariables: HydrogenStorefrontEnvironmentVariableInput[] = Object.keys(parsedVars)
-    .map((key: string) => ({ key, value: parsedVars[key]}));
 
   outputInfo(outputContent`Pushing to ${validated.branch ?? ''} branch...`);
 
