@@ -5,17 +5,11 @@ import {login} from '../../../lib/auth.js';
 import {getCliCommand} from '../../../lib/shell.js';
 import {resolvePath} from '@shopify/cli-kit/node/path';
 import {
-  ensureIsClean,
-  getLatestGitCommit,
-  GitDirectoryNotCleanError,
-} from '@shopify/cli-kit/node/git';
-import {
   renderConfirmationPrompt,
   renderSelectPrompt,
   renderInfo,
   renderWarning,
   renderSuccess,
-  renderError,
 } from '@shopify/cli-kit/node/ui';
 import {fileExists, readFile, writeFile} from '@shopify/cli-kit/node/fs';
 import {
@@ -26,13 +20,10 @@ import {
 } from '@shopify/cli-kit/node/output';
 import {
   renderMissingLink,
-  renderMissingStorefront,
 } from '../../../lib/render-errors.js';
 import {Environment, getStorefrontEnvironments} from '../../../lib/graphql/admin/list-environments.js';
 import {linkStorefront} from '../link.js';
 import {getStorefrontEnvVariables} from '../../../lib/graphql/admin/pull-variables.js';
-import {pluralize} from '@shopify/cli-kit/common/string';
-import {ciPlatform} from '@shopify/cli-kit/node/context/local';
 import {HydrogenStorefrontEnvironmentVariableInput, pushStorefrontEnvVariables} from '../../../lib/graphql/admin/push-variables.js';
 
 interface GitCommit {
@@ -240,8 +231,6 @@ Continue?`.value,
     if (!confirmPush) process.exit(0);
   }
 
-  outputInfo(outputContent`Pushing to ${validated.branch ?? ''} branch...`);
-
   if (!validated.id) process.exit(1);
   const {userErrors} = await pushStorefrontEnvVariables(
     session,
@@ -257,7 +246,9 @@ Continue?`.value,
     });
   }
 
-  outputInfo(outputContent`Push to ${validated.branch ?? ''} successful.`);
+  renderSuccess({
+    body: `Push to ${validated.branch ?? ''} successful.`
+  });
 
   process.exit(0);
 }
