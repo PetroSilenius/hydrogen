@@ -206,8 +206,6 @@ export async function runEnvPush({
   const fetchedEnvVariablesString = fetchedEnvVariables
     .map(({key, value}) => `${key}=${value?.replace(/\n/g, "\\n")}`).join('\n');
 
-  console.log('hit', fetchedEnvVariables, fetchedEnvString);
-
   if (envVariablesString === fetchedEnvVariablesString) {
     renderInfo({
       body: 'No changes to your environment variables',
