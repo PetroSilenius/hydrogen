@@ -11,12 +11,10 @@ import {
   renderWarning,
   renderSuccess,
 } from '@shopify/cli-kit/node/ui';
-import {fileExists, readFile, writeFile} from '@shopify/cli-kit/node/fs';
+import {fileExists, readFile} from '@shopify/cli-kit/node/fs';
 import {
   outputContent,
-  outputInfo,
   outputToken,
-  outputWarn,
 } from '@shopify/cli-kit/node/output';
 import {
   renderMissingLink,
@@ -25,11 +23,6 @@ import {Environment, getStorefrontEnvironments} from '../../../lib/graphql/admin
 import {linkStorefront} from '../link.js';
 import {getStorefrontEnvVariables} from '../../../lib/graphql/admin/pull-variables.js';
 import {HydrogenStorefrontEnvironmentVariableInput, pushStorefrontEnvVariables} from '../../../lib/graphql/admin/push-variables.js';
-
-interface GitCommit {
-  refs: string;
-  hash: string;
-}
 
 export default class EnvPush extends Command {
   static description =
