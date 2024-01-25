@@ -49,7 +49,7 @@ export async function runEnvPush({
   environment,
   path = process.cwd(),
 }: Flags) {
-  let validated: Partial<Environment> = {};
+  let validatedEnvironment: Partial<Environment> = {};
 
   // Ensure .env file exists before anything
   const dotEnvPath = resolvePath(path, '.env');
@@ -87,26 +87,23 @@ export async function runEnvPush({
   if (!config.storefront?.id) return;
 
   // Fetch environments
-  const environmentsData = await getStorefrontEnvironments(
+  const {environments: environmentsData} = await getStorefrontEnvironments(
     session,
     config.storefront.id,
-  );
+  ) ?? {};
 
   if (!environmentsData) {
     renderWarning({
-      headline: 'Failed to fetch environments',
+      body: 'Failed to fetch environments',
     });
     process.exit(1);
   };
 
-  const preview = environmentsData.environments.filter((environment) => environment.type === 'PREVIEW')
-  const production = environmentsData.environments.filter((environment) => environment.type === 'PRODUCTION')
-  const custom = environmentsData.environments.filter((environment) => environment.type === 'CUSTOM')
-
+  // Order environments
   const environments = [
-    ...preview,
-    ...custom,
-    ...production,
+    ...environmentsData.filter((environment) => environment.type === 'PREVIEW'),
+    ...environmentsData.filter((environment) => environment.type === 'CUSTOM'),
+    ...environmentsData.filter((environment) => environment.type === 'PRODUCTION'),
   ];
 
   if (environments.length === 0) {
@@ -120,7 +117,6 @@ export async function runEnvPush({
   if (environment) {
     // If an environment was passed in, ensure the parameter is a valid environment, and unique
     const matchedEnvironments = environments.filter(({name}) => name === environment);
-
     if (matchedEnvironments.length === 0) {
       renderWarning({
         headline: 'Environment not found',
@@ -129,7 +125,7 @@ export async function runEnvPush({
       process.exit(1);
     } else if (matchedEnvironments.length === 1) {
       const {id, name, branch, type} = matchedEnvironments[0] ?? {};
-      validated = {id, name, branch, type};
+      validatedEnvironment = {id, name, branch, type};
     } else {
       // Prompt the user for a selection if there are multiple matches
       const selection = await renderSelectPrompt({
@@ -143,7 +139,7 @@ export async function runEnvPush({
         ]
       });
       const {id, name, branch, type} = matchedEnvironments.find(({id}) => id === selection) ?? {};
-      validated = {id, name, branch, type};
+      validatedEnvironment = {id, name, branch, type};
     }
   } else {
     // Environment flag not passed
@@ -160,62 +156,62 @@ export async function runEnvPush({
     });
 
     const {id, name, branch, type} = environments.find(({id}) => id === pushToBranchSelection) ?? {};
-    validated = {id, name, branch, type};
+    validatedEnvironment = {id, name, branch, type};
   }
 
-  // Confirm changes and show a generate diff of changes
-  if (!validated.name) process.exit(1);
-
-  // Normalize remote variables
+  // Fetch remote variables
   const {environmentVariables = []} = await getStorefrontEnvVariables(
     session,
     config.storefront.id,
-    validated.branch ?? undefined,
+    validatedEnvironment.branch ?? undefined,
   ) ?? {};
 
-  const fetchedEnvString = environmentVariables.reduce((acc, {isSecret, key, value}) => {
-    if (isSecret) return acc; // ignore secrets
+  // Generate a list of remote secrets
+    const remoteSecrets = environmentVariables.reduce((acc, {isSecret, key}) =>
+    isSecret ? [...acc, key] : acc,
+    [] as string[],
+  );
+
+  // Normalize remote variables
+  const remoteVars = environmentVariables.reduce((acc, {isSecret, key, value}) => {
+    if (isSecret) return acc; // ignore secrets for diff
     return `${acc}${key}=${value.replace(/\n/g, "\\n")}\n`;
   }, '');
-  const parsedFetchedEnv = parseEnvFile(fetchedEnvString);
-  const fetchedEnvVariables = Object.keys(parsedFetchedEnv)
-    .map((key: string) => ({ key, value: parsedFetchedEnv[key]}))
-  const fetchedEnvVariablesString = fetchedEnvVariables
-    .map(({key, value}) => `${key}=${value?.replace(/\n/g, "\\n")}`).join('\n');
-
-  // Generate a list of secrets that exist locally
-  const fetchedSecrets = environmentVariables.reduce((acc, {isSecret, key}) => {
-    return isSecret ? [...acc, key] : acc;
-  }, [] as string[]);
+  const parsedRemoteVars = parseEnvFile(remoteVars);
+  const compareableRemoteVars = Object.keys(parsedRemoteVars)
+    .map((key: string) => ({ key, value: parsedRemoteVars[key]}))
+    .map(({key, value}) => `${key}=${value?.replace(/\n/g, "\n")}`).join('\n');
 
   // Normalize local variables
-  const parsedVars = parseEnvFile(existingEnv)
-  const envVariables = Object.keys(parsedVars)
+  const parsedLocalVars = parseEnvFile(existingEnv);
+  const localVariables = Object.keys(parsedLocalVars)
     .reduce((acc, key) => {
-      if (fetchedSecrets.includes(key)) return acc;
-      return [...acc, ({ key, value: parsedVars[key]})];
+      if (remoteSecrets.includes(key)) return acc;
+      return [...acc, ({ key, value: parsedLocalVars[key]?.replace(/\n/g, "\\n")})];
     }, [] as HydrogenStorefrontEnvironmentVariableInput[]);
-  const envVariablesString = envVariables
-    .map(({key, value}) => `${key}=${value?.replace(/\n/g, "\\n")}`).join('\n')
-  const matchingSecrets = fetchedSecrets.filter((key) => Object.keys(parsedVars).includes(key));
+  const compareableLocalVars = localVariables
+    .map(({key, value}) => `${key}=${value}`).join('\n');
 
-  if (envVariablesString === fetchedEnvVariablesString) {
+  // Find secrets that are both remote and local
+  const matchingSecrets = remoteSecrets.filter((key) => Object.keys(parsedLocalVars).includes(key));
+
+  // Confirm changes and show a generate diff of changes
+  if (!validatedEnvironment.name) process.exit(1);
+
+  if (compareableLocalVars === compareableRemoteVars) {
     renderInfo({
-      body: `No changes to your environment variables.${Boolean(matchingSecrets.length) ? `\n\nVariables with secret values cannot be pushed from the CLI: ${fetchedSecrets.join(', ')}.` : ''}`,
+      body: `No changes to your environment variables.${Boolean(matchingSecrets.length) ? `\n\nVariables with secret values cannot be pushed from the CLI: ${matchingSecrets.join(', ')}.` : ''}`,
     });
     process.exit(0);
   } else {
-    const diff = diffLines(
-      fetchedEnvVariablesString,
-      envVariablesString,
-    );
+    const diff = diffLines(compareableRemoteVars, compareableLocalVars);
     const confirmPush = await renderConfirmationPrompt({
       confirmationMessage: `Yes, confirm changes`,
       cancellationMessage: `No, make changes later`,
-      message: outputContent`We'll make the following changes to your environment variables for ${validated.name}:
+      message: outputContent`We'll make the following changes to your environment variables for ${validatedEnvironment.name}:
 
 ${outputToken.linesDiff(diff)}
-${Boolean(fetchedSecrets.length) ? `Secret keys cannot be pushed: ${matchingSecrets.join(', ')}` : ''}
+${Boolean(matchingSecrets.length) ? `Secret keys cannot be pushed: ${matchingSecrets.join(', ')}` : ''}
 
 Continue?`.value,
     });
@@ -224,12 +220,12 @@ Continue?`.value,
     if (!confirmPush) process.exit(0);
   }
 
-  if (!validated.id) process.exit(1);
+  if (!validatedEnvironment.id) process.exit(1);
   const {userErrors} = await pushStorefrontEnvVariables(
     session,
     config.storefront.id,
-    validated.id,
-    envVariables,
+    validatedEnvironment.id,
+    localVariables,
   );
 
   if (userErrors.length) {
@@ -240,7 +236,7 @@ Continue?`.value,
   }
 
   renderSuccess({
-    body: `Push to ${validated.branch ?? ''} successful.`
+    body: `Push to ${validatedEnvironment.branch ?? ''} successful.`
   });
 
   process.exit(0);
