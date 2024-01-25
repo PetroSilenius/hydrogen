@@ -182,20 +182,13 @@ export async function runEnvPush({
   // Confirm changes and show a generate diff of changes
   if (!validated.name) process.exit(1);
 
-  // Normalize local variables
-  const parsedVars = parseEnvFile(existingEnv)
-  const envVariables: HydrogenStorefrontEnvironmentVariableInput[] = Object.keys(parsedVars)
-    .map((key: string) => ({ key, value: parsedVars[key]}));
-  const envVariablesString = envVariables
-    .map(({key, value}) => `${key}=${value?.replace(/\n/g, "\\n")}`).join('\n')
-
+  // Normalize remote variables
   const {environmentVariables = []} = await getStorefrontEnvVariables(
     session,
     config.storefront.id,
     validated.branch ?? undefined,
   ) ?? {};
 
-  // Normalize remote variables
   const fetchedEnvString = environmentVariables.reduce((acc, {isSecret, key, value}) => {
     if (isSecret) return acc; // ignore secrets
     return `${acc}${key}=${value.replace(/\n/g, "\\n")}\n`;
@@ -206,9 +199,25 @@ export async function runEnvPush({
   const fetchedEnvVariablesString = fetchedEnvVariables
     .map(({key, value}) => `${key}=${value?.replace(/\n/g, "\\n")}`).join('\n');
 
+  // Generate a list of secrets that exist locally
+  const fetchedSecrets = environmentVariables.reduce((acc, {isSecret, key}) => {
+    return isSecret ? [...acc, key] : acc;
+  }, [] as string[]);
+
+  // Normalize local variables
+  const parsedVars = parseEnvFile(existingEnv)
+  const envVariables = Object.keys(parsedVars)
+    .reduce((acc, key) => {
+      if (fetchedSecrets.includes(key)) return acc;
+      return [...acc, ({ key, value: parsedVars[key]})];
+    }, [] as HydrogenStorefrontEnvironmentVariableInput[]);
+  const envVariablesString = envVariables
+    .map(({key, value}) => `${key}=${value?.replace(/\n/g, "\\n")}`).join('\n')
+  const matchingSecrets = fetchedSecrets.filter((key) => Object.keys(parsedVars).includes(key));
+
   if (envVariablesString === fetchedEnvVariablesString) {
     renderInfo({
-      body: 'No changes to your environment variables',
+      body: `No changes to your environment variables.${Boolean(matchingSecrets.length) ? `\n\nVariables with secret values cannot be pushed from the CLI: ${fetchedSecrets.join(', ')}.` : ''}`,
     });
     process.exit(0);
   } else {
@@ -222,6 +231,8 @@ export async function runEnvPush({
       message: outputContent`We'll make the following changes to your environment variables for ${validated.name}:
 
 ${outputToken.linesDiff(diff)}
+${Boolean(fetchedSecrets.length) ? `Secret keys cannot be pushed: ${matchingSecrets.join(', ')}` : ''}
+
 Continue?`.value,
     });
 
@@ -250,8 +261,6 @@ Continue?`.value,
 
   process.exit(0);
 }
-
-// TODO: Consesus on secrets
 
 // Referenced from dotenv
 // https://github.com/motdotla/dotenv/blob/master/lib/main.js#L12
