@@ -41,6 +41,7 @@
     "examples/bun",
     "examples/multipass",
     "examples/partytown",
+    "examples/metaobjects",
     "docs/preview",
     "packages/remix-oxygen",
     "packages/hydrogen",
