@@ -1,5 +1,13 @@
 # @shopify/hydrogen
 
+## 2024.1.2
+
+### Patch Changes
+
+- 🐛 Fix issue where customer login does not persist to checkout ([#1719](https://github.com/Shopify/hydrogen/pull/1719)) by [@michenly](https://github.com/michenly)
+
+  ✨ Add `customerAccount` option to `createCartHandler`. Where a `?logged_in=true` will be added to the checkoutUrl for cart query if a customer is logged in.
+
 ## 2024.1.1
 
 ### Patch Changes
